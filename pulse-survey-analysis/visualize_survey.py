@@ -402,6 +402,81 @@ def main():
     plt.close()
     print("Chart saved to", out_path_radar)
 
+    # LLM analysis: 5 things working well, 5 areas for improvement
+    _run_llm_analysis(
+        df=df,
+        question_cols_with_data=question_cols_with_data,
+        labels_ordered=labels_ordered,
+        label_by_col=label_by_col,
+        pct_neg_list=pct_neg_list,
+        pct_neu_list=pct_neu_list,
+        pct_pos_list=pct_pos_list,
+        attr_order=attr_order,
+        attr_neg=attr_neg,
+        attr_neu=attr_neu,
+        attr_pos=attr_pos,
+    )
+
+
+def _run_llm_analysis(
+    df,
+    question_cols_with_data,
+    labels_ordered,
+    label_by_col,
+    pct_neg_list,
+    pct_neu_list,
+    pct_pos_list,
+    attr_order,
+    attr_neg,
+    attr_neu,
+    attr_pos,
+):
+    """Call LLM to report 5 things working well and 5 areas for improvement."""
+    try:
+        from openai import OpenAI  # type: ignore[reportMissingImports]
+    except ImportError:
+        print("Skipping LLM analysis (openai not installed).")
+        return
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Skipping LLM analysis (OPENAI_API_KEY not set).")
+        return
+
+    client = OpenAI(api_key=api_key)
+    model = LLM_MODEL_ENV or _pick_available_chat_model(client)
+
+    # Build a concise data summary for the LLM
+    lines = ["## Overall: department-wide sentiment by question (Negative % | Neutral % | Positive %)"]
+    for i, col in enumerate(question_cols_with_data):
+        if i < len(labels_ordered) and i < len(pct_neg_list):
+            label = labels_ordered[i]
+            lines.append(f"- {label}: {pct_neg_list[i]:.0f}% | {pct_neu_list[i]:.0f}% | {pct_pos_list[i]:.0f}%")
+    lines.append("")
+    lines.append("## By attribute (department aggregate):")
+    for j, attr in enumerate(attr_order):
+        if j < len(attr_neg):
+            lines.append(f"- {attr}: Neg {attr_neg[j]:.0f}% | Neu {attr_neu[j]:.0f}% | Pos {attr_pos[j]:.0f}%")
+    data_summary = "\n".join(lines)
+
+    prompt = f"""You are analyzing engagement pulse survey results. Based on the data below, list exactly 5 things that are working well and 5 areas for improvement. Be specific and concise (1-2 sentences each). Use the exact headings "5 things working well" and "5 areas for improvement".
+
+Survey data summary:
+{data_summary}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        print("\n--- LLM Analysis ---\n")
+        print(text)
+        print("\n--- End LLM Analysis ---")
+    except Exception as e:
+        print(f"Skipping LLM analysis (API error: {e}).")
+
 
 if __name__ == "__main__":
     main()
