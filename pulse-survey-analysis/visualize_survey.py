@@ -2,7 +2,7 @@
 """
 Survey Results Visualization Script
 Reads survey-responses/GOps Engagement Survey – Pulse Check August 2025.xlsx, sheet Form Responses 1,
-outputs overall sentiment breakdown and a horizontal stacked bar chart per question.
+outputs overall sentiment breakdown, a horizontal stacked bar chart per question, and per-squad vertical bar charts (one PNG).
 
 Chart labels are derived from column headings via an LLM (OpenAI). Set OPENAI_API_KEY
 for LLM summarization. Leave OPENAI_MODEL unset to auto-pick a model you have access to. Without the API,
@@ -155,6 +155,18 @@ def get_question_columns(df):
     ]
 
 
+def get_squad_column(df):
+    """Return the column name that contains squad (e.g. AI, Alerting, IRM, SLOs), or None."""
+    for c in df.columns:
+        if "squad" in c.lower():
+            return c
+    return None
+
+
+# Expected squad names for ordering in charts (others from data will be appended)
+SQUAD_ORDER = ["AI", "Alerting", "IRM", "SLOs"]
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     year = extract_year_from_filename(EXCEL_FILE)
@@ -183,6 +195,7 @@ def main():
 
     # Per-question percentages for stacked bar chart
     labels_ordered = []
+    question_cols_with_data = []  # same order as labels_ordered
     pct_neg_list = []
     pct_neu_list = []
     pct_pos_list = []
@@ -194,6 +207,7 @@ def main():
         n = len(sents)
         if n == 0:
             continue
+        question_cols_with_data.append(col)
         pn = 100 * sum(1 for s in sents if s == "Negative") / n
         pnu = 100 * sum(1 for s in sents if s == "Neutral") / n
         pp = 100 * sum(1 for s in sents if s == "Positive") / n
@@ -222,7 +236,71 @@ def main():
     out_path = os.path.join(OUTPUT_DIR, f"responses-horizontal-graph{year_suffix}.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
-    print("\nChart saved to", out_path)
+    print("Chart saved to", out_path)
+
+    # Per-question, per-squad vertical bar charts in one file (3 rows × N columns)
+    squad_col = get_squad_column(df)
+    if squad_col is None:
+        print("No squad column found; skipping per-squad charts.")
+    else:
+        # Build ordered list of squads (prefer SQUAD_ORDER, then any others from data)
+        squads_in_data = df[squad_col].dropna().astype(str).str.strip().unique().tolist()
+        squads_ordered = [s for s in SQUAD_ORDER if s in squads_in_data]
+        for s in squads_in_data:
+            if s not in squads_ordered:
+                squads_ordered.append(s)
+
+        n_q = len(labels_ordered)
+        n_cols = max(1, (n_q + 2) // 3)  # 3 rows, as many columns as needed
+        n_rows = 3
+        fig2, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        if n_q == 1:
+            axes = np.array([[axes]])
+        elif axes.ndim == 1:
+            axes = axes.reshape(1, -1)
+        axes_flat = axes.flatten()
+
+        for idx, col in enumerate(question_cols_with_data):
+            if idx >= len(labels_ordered):
+                break
+            ax = axes_flat[idx]
+            row = df[[col, squad_col]].dropna(subset=[col])
+            row = row[row[squad_col].astype(str).str.strip().isin(squads_ordered)]
+            neg_list, neu_list, pos_list = [], [], []
+            for squad in squads_ordered:
+                subset = row[row[squad_col].astype(str).str.strip() == squad]
+                vals = subset[col].astype(str)
+                sents = [s for s in [sentiment(v) for v in vals] if s is not None]
+                n = len(sents)
+                if n == 0:
+                    neg_list.append(0)
+                    neu_list.append(0)
+                    pos_list.append(0)
+                else:
+                    neg_list.append(100 * sum(1 for s in sents if s == "Negative") / n)
+                    neu_list.append(100 * sum(1 for s in sents if s == "Neutral") / n)
+                    pos_list.append(100 * sum(1 for s in sents if s == "Positive") / n)
+            x = np.arange(len(squads_ordered))
+            w = 0.6
+            ax.bar(x, neg_list, width=w, color="#E24B4B", label="Negative")
+            ax.bar(x, neu_list, width=w, bottom=neg_list, color="#F5A623", label="Neutral")
+            ax.bar(x, pos_list, width=w, bottom=np.array(neg_list) + np.array(neu_list), color="#7ED321", label="Positive")
+            ax.set_xticks(x)
+            ax.set_xticklabels(squads_ordered, rotation=0)
+            ax.set_ylabel("Percentage")
+            ax.set_ylim(0, 100)
+            ax.set_title(labels_ordered[idx][:40] + ("…" if len(labels_ordered[idx]) > 40 else ""), fontsize=9)
+            if idx == 0:
+                ax.legend(loc="upper right", fontsize=7)
+
+        for j in range(len(labels_ordered), len(axes_flat)):
+            axes_flat[j].set_visible(False)
+        plt.suptitle("Pulse Survey – Sentiment by question and squad", y=1.02, fontsize=12)
+        plt.tight_layout()
+        out_path_squad = os.path.join(OUTPUT_DIR, f"responses-by-squad{year_suffix}.png")
+        plt.savefig(out_path_squad, dpi=150, bbox_inches="tight")
+        plt.close()
+        print("Chart saved to", out_path_squad)
 
 
 if __name__ == "__main__":
