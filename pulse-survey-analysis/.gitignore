@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets / env
+.env
+.env.local
+
+# Survey data (keep responses out of repo)
+survey-responses/*.xlsx
+
+# Matplotlib cache (created by script)
+.venv/matplotlib-cache/
+
+# OS
+.DS_Store

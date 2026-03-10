@@ -1,0 +1,3 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/pulse-survey-analysis/.venv/bin/python"
+}
