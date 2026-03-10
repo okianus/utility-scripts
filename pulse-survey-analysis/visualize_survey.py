@@ -382,6 +382,26 @@ def main():
     plt.close()
     print("Chart saved to", out_path_attr)
 
+    # Radar chart: same by-attribute data (positive % per attribute; higher = better)
+    num_attrs = len(attr_order)
+    angles = np.linspace(0, 2 * np.pi, num_attrs, endpoint=False).tolist()
+    angles += angles[:1]
+    values = attr_pos + attr_pos[:1]
+    fig4, ax4 = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection="polar"))
+    ax4.plot(angles, values, "o-", color="#7ED321", linewidth=2)
+    ax4.fill(angles, values, color="#7ED321", alpha=0.25)
+    for angle, val in zip(angles[:-1], attr_pos):
+        ax4.text(angle, val, f"{round(val)}%", ha="center", va="center", fontsize=9)
+    ax4.set_xticks(angles[:-1])
+    ax4.set_xticklabels(attr_order, fontsize=9)
+    ax4.set_ylim(0, 100)
+    ax4.set_title("Pulse Survey – Positive % by attribute (radar)", pad=20)
+    plt.tight_layout()
+    out_path_radar = os.path.join(OUTPUT_DIR, f"responses-by-attribute-radar{year_suffix}.png")
+    plt.savefig(out_path_radar, dpi=150, bbox_inches="tight")
+    plt.close()
+    print("Chart saved to", out_path_radar)
+
 
 if __name__ == "__main__":
     main()
