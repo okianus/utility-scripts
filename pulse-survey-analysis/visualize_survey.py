@@ -138,11 +138,24 @@ def sentiment(value):
     return None
 
 
-def extract_year_from_filename(filepath):
-    """Extract a 4-digit year from the filename only (e.g. '...August 2025.xlsx' -> '2025')."""
+# Month names as they appear in the survey filename (e.g. "...August 2025.xlsx")
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def extract_month_year_from_filename(filepath):
+    """Extract (month, year) from the filename only. Returns (str, str) or (None, str).
+    E.g. '...February 2026.xlsx' -> ('February', '2026'); '...Survey 2025.xlsx' -> (None, '2025').
+    """
     filename = os.path.basename(filepath)
+    for month in _MONTH_NAMES:
+        match = re.search(re.escape(month) + r"\s+(20\d{2})\b", filename, re.IGNORECASE)
+        if match:
+            return (month, match.group(1))
     match = re.search(r"\b(20\d{2})\b", filename)
-    return match.group(1) if match else None
+    return (None, match.group(1)) if match else (None, None)
 
 
 def get_question_columns(df):
@@ -189,8 +202,11 @@ QUESTION_TO_ATTRIBUTE = {
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    year = extract_year_from_filename(EXCEL_FILE)
+    month, year = extract_month_year_from_filename(EXCEL_FILE)
     year_suffix = f"-{year}" if year else ""
+    title_suffix = (
+        f" – {month} {year}" if month and year else (f" – {year}" if year else "")
+    )
 
     df = pd.read_excel(EXCEL_FILE, sheet_name=SHEET_NAME)
     question_cols = get_question_columns(df)
@@ -208,7 +224,7 @@ def main():
     pct_neu = 100 * sum(1 for s in all_sentiments if s == "Neutral") / n_total if n_total else 0
     pct_neg = 100 * sum(1 for s in all_sentiments if s == "Negative") / n_total if n_total else 0
 
-    print(f"Overall sentiment breakdown {year_suffix[1:]}")
+    print(f"\nOverall sentiment breakdown – {month} {year_suffix[1:]}")
     print("🟩 {:.0f}% Positive (Agree / Strongly Agree)".format(pct_pos))
     print("🟨 {:.0f}% Neutral".format(pct_neu))
     print("🟥 {:.0f}% Negative (Disagree / Strongly Disagree)".format(pct_neg))
@@ -251,7 +267,7 @@ def main():
     ax.set_xlabel("Percentage of responses")
     ax.set_ylabel("")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
-    ax.set_title("Pulse Survey – Sentiment by question")
+    ax.set_title("Pulse Survey – Sentiment by question" + title_suffix)
     plt.tight_layout()
     out_path = os.path.join(OUTPUT_DIR, f"responses-horizontal-graph{year_suffix}.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -315,7 +331,7 @@ def main():
 
         for j in range(len(labels_ordered), len(axes_flat)):
             axes_flat[j].set_visible(False)
-        plt.suptitle("Pulse Survey – Sentiment by question and squad", y=1.02, fontsize=12)
+        plt.suptitle("Pulse Survey – Sentiment by question and squad" + title_suffix, y=1.02, fontsize=12)
         plt.tight_layout()
         out_path_squad = os.path.join(OUTPUT_DIR, f"responses-by-squad{year_suffix}.png")
         plt.savefig(out_path_squad, dpi=150, bbox_inches="tight")
@@ -377,7 +393,7 @@ def main():
     ax3.set_xlim(0, 100)
     ax3.set_xlabel("Percentage of responses")
     ax3.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
-    ax3.set_title("Pulse Survey – Sentiment by attribute (department aggregate)")
+    ax3.set_title("Pulse Survey – Sentiment by attribute (department aggregate)" + title_suffix)
     plt.tight_layout()
     out_path_attr = os.path.join(OUTPUT_DIR, f"responses-by-attribute{year_suffix}.png")
     plt.savefig(out_path_attr, dpi=150, bbox_inches="tight")
@@ -397,7 +413,7 @@ def main():
     ax4.set_xticks(angles[:-1])
     ax4.set_xticklabels(attr_order, fontsize=9)
     ax4.set_ylim(0, 100)
-    ax4.set_title("Pulse Survey – Positive % by attribute (radar)", pad=20)
+    ax4.set_title("Pulse Survey – Positive % by attribute (radar)" + title_suffix, pad=20)
     plt.tight_layout()
     out_path_radar = os.path.join(OUTPUT_DIR, f"responses-by-attribute-radar{year_suffix}.png")
     plt.savefig(out_path_radar, dpi=150, bbox_inches="tight")
