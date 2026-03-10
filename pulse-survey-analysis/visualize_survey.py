@@ -207,6 +207,9 @@ def main():
     title_suffix = (
         f" – {month} {year}" if month and year else (f" – {year}" if year else "")
     )
+    # Filename prefix: year-month (month lowercase) for year-month-description.png
+    month_lower = month.lower() if month else ""
+    filename_prefix = f"{year}-{month_lower}" if year and month_lower else (year or "output")
 
     df = pd.read_excel(EXCEL_FILE, sheet_name=SHEET_NAME)
     question_cols = get_question_columns(df)
@@ -269,7 +272,7 @@ def main():
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
     ax.set_title("Pulse Survey – Sentiment by question" + title_suffix)
     plt.tight_layout()
-    out_path = os.path.join(OUTPUT_DIR, f"responses-horizontal-graph{year_suffix}.png")
+    out_path = os.path.join(OUTPUT_DIR, f"{filename_prefix}-responses-by-question.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path)
@@ -333,7 +336,7 @@ def main():
             axes_flat[j].set_visible(False)
         plt.suptitle("Pulse Survey – Sentiment by question and squad" + title_suffix, y=1.02, fontsize=12)
         plt.tight_layout()
-        out_path_squad = os.path.join(OUTPUT_DIR, f"responses-by-squad{year_suffix}.png")
+        out_path_squad = os.path.join(OUTPUT_DIR, f"{filename_prefix}-responses-by-squad.png")
         plt.savefig(out_path_squad, dpi=150, bbox_inches="tight")
         plt.close()
         print("Chart saved to", out_path_squad)
@@ -395,7 +398,7 @@ def main():
     ax3.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
     ax3.set_title("Pulse Survey – Sentiment by attribute (department aggregate)" + title_suffix)
     plt.tight_layout()
-    out_path_attr = os.path.join(OUTPUT_DIR, f"responses-by-attribute{year_suffix}.png")
+    out_path_attr = os.path.join(OUTPUT_DIR, f"{filename_prefix}-responses-by-attribute.png")
     plt.savefig(out_path_attr, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path_attr)
@@ -415,7 +418,7 @@ def main():
     ax4.set_ylim(0, 100)
     ax4.set_title("Pulse Survey – Positive % by attribute (radar)" + title_suffix, pad=20)
     plt.tight_layout()
-    out_path_radar = os.path.join(OUTPUT_DIR, f"responses-by-attribute-radar{year_suffix}.png")
+    out_path_radar = os.path.join(OUTPUT_DIR, f"{filename_prefix}-responses-by-attribute-radar.png")
     plt.savefig(out_path_radar, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path_radar)
