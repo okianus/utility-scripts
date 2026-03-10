@@ -166,6 +166,24 @@ def get_squad_column(df):
 # Expected squad names for ordering in charts (others from data will be appended)
 SQUAD_ORDER = ["AI", "Alerting", "IRM", "SLOs"]
 
+# Question text (column header) -> attribute for aggregated-by-attribute chart. Must have equal questions per attribute.
+QUESTION_TO_ATTRIBUTE = {
+    "Over the past 6 months, I have had opportunities at work to learn and grow.": "Growth and autonomy",
+    "I have received recognition or praise for doing good work.": "Recognition",
+    "My fellow employees are committed to doing quality work.": "Meaningful work",
+    "I have input into the goals or priorities for my team.": "Effective communication",
+    "If I make a mistake on this team, it is not held against me.": "Team dynamics",
+    "I know what is expected of me at work.": "Supportive leadership",
+    "I understand what success looks like for Grafana, and I believe my team is focused on the right, highest-impact work to achieve it.": "Strategic clarity & leverage",
+    "I have the opportunity to do what I do best every day.": "Meaningful work",
+    "There is someone at work who encourages my development.": "Team dynamics",
+    "I have the freedom to decide how to approach my work.": "Growth and autonomy",
+    "My manager, or someone at work, seems to care about me as a person.": "Recognition",
+    "I feel empowered to use AI and other tools to increase my impact and help my team move faster.": "Strategic clarity & leverage",
+    "My manager gives me useful feedback to help me improve.": "Supportive leadership",
+    "There are open channels for me to share ideas and concerns.": "Effective communication",
+}
+
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -301,6 +319,68 @@ def main():
         plt.savefig(out_path_squad, dpi=150, bbox_inches="tight")
         plt.close()
         print("Chart saved to", out_path_squad)
+
+    # By-attribute chart: map questions to attributes, aggregate, require equal questions per attribute
+    attr_to_questions = {}  # attribute -> list of column names (from question_cols_with_data)
+    for col in question_cols_with_data:
+        key = col.strip()
+        attr = QUESTION_TO_ATTRIBUTE.get(key)
+        if attr is None:
+            # Try match by substring in case Excel trims or slightly differs
+            for q, a in QUESTION_TO_ATTRIBUTE.items():
+                if q.strip() in key or key in q.strip():
+                    attr = a
+                    break
+        if attr is not None:
+            attr_to_questions.setdefault(attr, []).append(col)
+    mapped_count = sum(len(qs) for qs in attr_to_questions.values())
+    if mapped_count != len(question_cols_with_data):
+        unmapped = [c for c in question_cols_with_data if not any(c.strip() == q.strip() or c.strip() in q.strip() or q.strip() in c.strip() for q in QUESTION_TO_ATTRIBUTE)]
+        raise SystemExit(
+            f"Error: Every question must map to an attribute. {len(question_cols_with_data) - mapped_count} question(s) have no mapping. Unmapped columns (sample): {unmapped[:3]}"
+        )
+    counts = [len(qs) for qs in attr_to_questions.values()]
+    if not counts or len(set(counts)) != 1:
+        raise SystemExit(
+            "Error: Each attribute must have the same number of questions. "
+            f"Current per-attribute counts: {dict((a, len(qs)) for a, qs in attr_to_questions.items())}"
+        )
+    # Aggregate sentiment by attribute (pool all responses for questions in that attribute)
+    attr_order = sorted(attr_to_questions.keys(), key=str.lower)
+    attr_neg, attr_neu, attr_pos = [], [], []
+    for attr in attr_order:
+        cols = attr_to_questions[attr]
+        all_sents = []
+        for col in cols:
+            vals = df[col].dropna().astype(str)
+            all_sents.extend([s for s in [sentiment(v) for v in vals] if s is not None])
+        n = len(all_sents)
+        if n == 0:
+            attr_neg.append(0)
+            attr_neu.append(0)
+            attr_pos.append(0)
+        else:
+            attr_neg.append(100 * sum(1 for s in all_sents if s == "Negative") / n)
+            attr_neu.append(100 * sum(1 for s in all_sents if s == "Neutral") / n)
+            attr_pos.append(100 * sum(1 for s in all_sents if s == "Positive") / n)
+    fig3, ax3 = plt.subplots(figsize=(12, max(5, len(attr_order) * 0.6)))
+    y_attr = np.arange(len(attr_order))
+    left_neg = np.array(attr_neg)
+    left_neu = left_neg + np.array(attr_neu)
+    ax3.barh(y_attr, attr_neg, color="#E24B4B", label="Negative (Disagree + Strongly Disagree)")
+    ax3.barh(y_attr, attr_neu, left=left_neg, color="#F5A623", label="Neutral")
+    ax3.barh(y_attr, attr_pos, left=left_neu, color="#7ED321", label="Positive (Agree / Strongly Agree)")
+    ax3.set_yticks(y_attr)
+    ax3.set_yticklabels(attr_order, fontsize=10)
+    ax3.set_xlim(0, 100)
+    ax3.set_xlabel("Percentage of responses")
+    ax3.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
+    ax3.set_title("Pulse Survey – Sentiment by attribute (department aggregate)")
+    plt.tight_layout()
+    out_path_attr = os.path.join(OUTPUT_DIR, f"responses-by-attribute{year_suffix}.png")
+    plt.savefig(out_path_attr, dpi=150, bbox_inches="tight")
+    plt.close()
+    print("Chart saved to", out_path_attr)
 
 
 if __name__ == "__main__":
