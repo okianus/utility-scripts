@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Survey Results Visualization Script
-Reads survey-responses/GOps Engagement Survey – Pulse Check August 2025.xlsx, sheet Form Responses 1,
+Reads survey-responses/GOps Engagement Survey – Pulse Check MONTH YEAR.xlsx, sheet Form Responses 1,
 outputs overall sentiment breakdown, a horizontal stacked bar chart per question, and per-squad vertical bar charts (one PNG).
 
 Chart labels are derived from column headings via an LLM (OpenAI). Set OPENAI_API_KEY
@@ -23,7 +23,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check August 2025.xlsx")
+# EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check August 2025.xlsx")
+EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check February 2026.xlsx")
 SHEET_NAME = "Form Responses 1"
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
@@ -138,8 +139,9 @@ def sentiment(value):
 
 
 def extract_year_from_filename(filepath):
-    """Extract a 4-digit year from the filename (e.g. '...August 2025.xlsx' -> '2025')."""
-    match = re.search(r"\b(20\d{2})\b", filepath)
+    """Extract a 4-digit year from the filename only (e.g. '...August 2025.xlsx' -> '2025')."""
+    filename = os.path.basename(filepath)
+    match = re.search(r"\b(20\d{2})\b", filename)
     return match.group(1) if match else None
 
 
@@ -206,7 +208,7 @@ def main():
     pct_neu = 100 * sum(1 for s in all_sentiments if s == "Neutral") / n_total if n_total else 0
     pct_neg = 100 * sum(1 for s in all_sentiments if s == "Negative") / n_total if n_total else 0
 
-    print(f"Overall sentiment breakdown {year_suffix}")
+    print(f"Overall sentiment breakdown {year_suffix[1:]}")
     print("🟩 {:.0f}% Positive (Agree / Strongly Agree)".format(pct_pos))
     print("🟨 {:.0f}% Neutral".format(pct_neu))
     print("🟥 {:.0f}% Negative (Disagree / Strongly Disagree)".format(pct_neg))
