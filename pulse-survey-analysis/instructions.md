@@ -38,7 +38,9 @@
   4. Map each question to the attribute it's measuring using the instructions in Processing section above. Then create a horizontal bar chart that includes the attribute, and shows the negative, neutral and positive percentages, across the entire department (aggregated over all squads). Make sure that an equal number of questions is mapped to each attribute, and report an error if that's not the case.
   5. Now use the same data as in the previous point, but this time present it as a Radar Chart.  
   6. Save charts as pngs in 'output/' folder
-  7. Analyze the data using the LLM and report 5 things that are working well as well as 5 areas for improvement
+  7. Output all the comments that people have included as optional in their survey responses. Use the LLM to gauge the sentiment as positive / neutral / negative, and group them by sentiment. Before each comment, add in brackets the squad of the person.
+  8. Analyze the data using the LLM and report 5 things that are working well as well as 5 areas for improvement
+  9. Dump all the output created above (the generated pngs, the comments and the analysis of the data) into a PDF titled YEAR-MONTH-gops-survey-summary.pdf in output/ folder.
 
 <!-- - Bar chart of average rating per question
 - Pie chart of distribution for each multiple-choice question

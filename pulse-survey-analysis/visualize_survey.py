@@ -178,6 +178,15 @@ def get_squad_column(df):
     return None
 
 
+def get_optional_comment_columns(df):
+    """Return column names that are optional free-text comment fields."""
+    return [
+        c for c in df.columns
+        if "optional" in c.lower()
+        and ("explain" in c.lower() or "share" in c.lower() or "comments" in c.lower())
+    ]
+
+
 # Expected squad names for ordering in charts (others from data will be appended)
 SQUAD_ORDER = ["AI", "Alerting", "IRM", "SLOs"]
 
@@ -276,6 +285,7 @@ def main():
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path)
+    png_paths = [out_path]
 
     # Per-question, per-squad vertical bar charts in one file (3 rows × N columns)
     squad_col = get_squad_column(df)
@@ -340,6 +350,7 @@ def main():
         plt.savefig(out_path_squad, dpi=150, bbox_inches="tight")
         plt.close()
         print("Chart saved to", out_path_squad)
+        png_paths.append(out_path_squad)
 
     # By-attribute chart: map questions to attributes, aggregate, require equal questions per attribute
     attr_to_questions = {}  # attribute -> list of column names (from question_cols_with_data)
@@ -402,6 +413,7 @@ def main():
     plt.savefig(out_path_attr, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path_attr)
+    png_paths.append(out_path_attr)
 
     # Radar chart: same by-attribute data (positive % per attribute; higher = better)
     num_attrs = len(attr_order)
@@ -422,9 +434,14 @@ def main():
     plt.savefig(out_path_radar, dpi=150, bbox_inches="tight")
     plt.close()
     print("Chart saved to", out_path_radar)
+    png_paths.append(out_path_radar)
+
+    # Step 7: Optional comments with LLM sentiment, grouped by sentiment, [Squad] prefix
+    squad_col = get_squad_column(df)
+    grouped_comments = _run_optional_comments_sentiment(df, squad_col)
 
     # LLM analysis: 5 things working well, 5 areas for improvement
-    _run_llm_analysis(
+    analysis_text = _run_llm_analysis(
         df=df,
         question_cols_with_data=question_cols_with_data,
         labels_ordered=labels_ordered,
@@ -437,6 +454,10 @@ def main():
         attr_neu=attr_neu,
         attr_pos=attr_pos,
     )
+
+    # Step 9: PDF with PNGs, comments, and analysis (YEAR-MONTH-gops-survey-summary.pdf)
+    pdf_path = os.path.join(OUTPUT_DIR, f"{filename_prefix}-gops-survey-summary.pdf")
+    _build_summary_pdf(png_paths, grouped_comments, analysis_text, pdf_path, month=month, year=year)
 
 
 def _run_llm_analysis(
@@ -495,8 +516,305 @@ Survey data summary:
         print("\n--- LLM Analysis ---\n")
         print(text)
         print("\n--- End LLM Analysis ---")
+        return text
     except Exception as e:
         print(f"Skipping LLM analysis (API error: {e}).")
+        return None
+
+
+def _run_optional_comments_sentiment(df, squad_col):
+    """Collect optional comments with squad, use LLM to gauge sentiment, group by sentiment. Return dict Positive/Neutral/Negative -> list of (squad, comment)."""
+    optional_cols = get_optional_comment_columns(df)
+    if not optional_cols:
+        print("No optional comment columns found.")
+        return {"Positive": [], "Neutral": [], "Negative": []}
+
+    # Collect (squad, comment) for each non-empty optional comment
+    squad_vals = df[squad_col].fillna("").astype(str).str.strip() if squad_col else [""] * len(df)
+    comments_with_squad = []
+    for idx in range(len(df)):
+        squad = squad_vals.iloc[idx] if squad_col else "Unknown"
+        for col in optional_cols:
+            val = df[col].iloc[idx]
+            if pd.notna(val) and str(val).strip():
+                comments_with_squad.append((squad, str(val).strip()))
+
+    if not comments_with_squad:
+        print("No optional comments to analyze.")
+        return {"Positive": [], "Neutral": [], "Negative": []}
+
+    # Get sentiment from LLM (batch)
+    try:
+        from openai import OpenAI  # type: ignore[reportMissingImports]
+    except ImportError:
+        print("Skipping optional comments sentiment (openai not installed).")
+        return {"Positive": [], "Neutral": [], "Negative": []}
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Skipping optional comments sentiment (OPENAI_API_KEY not set).")
+        return {"Positive": [], "Neutral": [], "Negative": []}
+
+    client = OpenAI(api_key=api_key)
+    model = LLM_MODEL_ENV or _pick_available_chat_model(client)
+    sentiments = []
+    batch_size = 30
+    for start in range(0, len(comments_with_squad), batch_size):
+        batch = comments_with_squad[start : start + batch_size]
+        numbered = "\n".join(f"{i+1}. {text[:500]}" for i, (_, text) in enumerate(batch))
+        prompt = f"""For each of the following survey comments, reply with exactly one word: Positive, Neutral, or Negative. Put one word per line, in the same order (line 1 = comment 1, etc.). No other text.
+
+Comments:
+{numbered}"""
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            for line in text.splitlines():
+                if len(sentiments) >= len(comments_with_squad):
+                    break
+                line = line.strip().lower()
+                if "positive" in line:
+                    sentiments.append("Positive")
+                elif "negative" in line:
+                    sentiments.append("Negative")
+                else:
+                    sentiments.append("Neutral")
+        except Exception as e:
+            print(f"LLM sentiment batch error: {e}; defaulting to Neutral.")
+            sentiments.extend(["Neutral"] * len(batch))
+    # Pad or trim to match comment count
+    while len(sentiments) < len(comments_with_squad):
+        sentiments.append("Neutral")
+    sentiments = sentiments[: len(comments_with_squad)]
+
+    grouped = {"Positive": [], "Neutral": [], "Negative": []}
+    for (squad, comment), sent in zip(comments_with_squad, sentiments):
+        grouped[sent].append((squad, comment))
+    # Sort by squad alphabetically within each sentiment
+    for sent in grouped:
+        grouped[sent] = sorted(grouped[sent], key=lambda x: (x[0].lower(), x[1]))
+
+    print("\n--- Optional comments (grouped by sentiment) ---")
+    for sent in ("Positive", "Neutral", "Negative"):
+        print(f"\n{sent}:")
+        for squad, comment in grouped[sent]:
+            print(f"  [{squad}] {comment}")
+    print("\n--- End optional comments ---")
+    return grouped
+
+
+def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, month=None, year=None):
+    """Write YEAR-MONTH-gops-survey-summary.pdf with PNGs, comments, and analysis."""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.utils import ImageReader
+    except ImportError:
+        print("Skipping PDF (reportlab not installed).")
+        return
+    c = canvas.Canvas(output_path, pagesize=letter)
+    w, h = letter
+    margin = inch * 0.75
+    margin_bottom = margin
+    y = h - margin
+
+    def draw_text_block(canvas_obj, text, x, y_ref, max_width, font_size=9):
+        """Draw wrapped text; start new page if below margin_bottom. Returns new y. Restore font after page break."""
+        canvas_obj.setFont("Helvetica", font_size)
+        y_pos = y_ref
+        line_height = max(10, font_size + 2)
+        for para in text.replace("\r", "").split("\n"):
+            lines = []
+            for word in para.split():
+                lines.append(word)
+                if canvas_obj.stringWidth(" ".join(lines), "Helvetica", font_size) > max_width:
+                    if len(lines) > 1:
+                        lines.pop()
+                        if y_pos - line_height < margin_bottom:
+                            canvas_obj.showPage()
+                            canvas_obj.setFont("Helvetica", font_size)
+                            y_pos = h - margin
+                        y_pos -= line_height
+                        canvas_obj.drawString(x, y_pos, " ".join(lines))
+                        lines = [word]
+                    else:
+                        if y_pos - line_height < margin_bottom:
+                            canvas_obj.showPage()
+                            canvas_obj.setFont("Helvetica", font_size)
+                            y_pos = h - margin
+                        y_pos -= line_height
+                        canvas_obj.drawString(x, y_pos, lines[0])
+                        lines = []
+            if lines:
+                if y_pos - line_height < margin_bottom:
+                    canvas_obj.showPage()
+                    canvas_obj.setFont("Helvetica", font_size)
+                    y_pos = h - margin
+                y_pos -= line_height
+                canvas_obj.drawString(x, y_pos, " ".join(lines))
+            y_pos -= 4
+        return y_pos
+
+    def draw_analysis_with_bold(canvas_obj, text, x, y_ref, max_width):
+        """Draw analysis text, rendering **...** as bold. One block per numbered item, line break before each new #."""
+        # Normalize newlines to spaces so we can split by " N. " pattern
+        normalized = re.sub(r"\s+", " ", text).strip()
+        # Split on " 1. ", " 2. ", etc. (space + digits + period + space) to get one chunk per numbered item; keep the delimiter so we can attach it
+        parts = re.split(r"\s+(\d+\.)\s+", normalized)
+        # parts[0] = optional header (no leading number), then alternating: "1.", "text for 1", "2.", "text for 2", ...
+        blocks = []
+        if parts and parts[0].strip():
+            blocks.append(parts[0].strip())
+        for i in range(1, len(parts) - 1, 2):
+            if i + 1 < len(parts):
+                blocks.append(parts[i] + " " + parts[i + 1].strip())
+        # Split any block that contains "5 areas for improvement" so that phrase starts its own block (enables 2 newlines before it)
+        expanded = []
+        for block in blocks:
+            bl = block.lower()
+            if "5 areas for improvement" in bl:
+                i = bl.find("5 areas for improvement")
+                before = block[:i].strip()
+                after = block[i:].strip()
+                if before:
+                    expanded.append(before)
+                expanded.append(after)
+            else:
+                expanded.append(block)
+        blocks = expanded
+        y_pos = y_ref
+        font_size = 9
+        line_height = font_size + 2
+        space_width = canvas_obj.stringWidth(" ", "Helvetica", font_size)
+        for idx, block in enumerate(blocks):
+            # Line break before each new item (except the first)
+            if idx > 0:
+                y_pos -= 10
+            # One extra newline before the "5 things working well" heading; two before "5 areas for improvement"
+            block_starts = block.strip().lower()
+            if block_starts.startswith("5 things working well"):
+                y_pos -= 20  # two extra lines before this heading
+            if block_starts.startswith("5 areas for improvement"):
+                y_pos -= 20
+            # Section headings: draw entire block in bold (they may lack ** in source after block split)
+            is_section_heading = block_starts.startswith("5 things working well") or block_starts.startswith("5 areas for improvement")
+            if is_section_heading:
+                clean = block.replace("**", "").strip()
+                word_stream = [(w, True) for w in clean.split() if w]
+            else:
+                # Split by ** for bold; strip any literal ** so they don't appear in the PDF
+                segments = re.split(r"\*\*(.+?)\*\*", block)
+                word_stream = []
+                for i, part in enumerate(segments):
+                    part = part.replace("**", "").strip()
+                    if not part:
+                        continue
+                    is_bold = i % 2 == 1
+                    for word in part.split():
+                        if word != "**":
+                            word_stream.append((word, is_bold))
+            # Build lines: each line is a list of (word, is_bold); wrap when line width would exceed max_width
+            lines_to_draw = []
+            current_line = []
+            current_width = 0
+            for word, is_bold in word_stream:
+                w = canvas_obj.stringWidth(word, "Helvetica-Bold" if is_bold else "Helvetica", font_size)
+                if current_line and current_width + space_width + w > max_width:
+                    lines_to_draw.append(current_line)
+                    current_line = [(word, is_bold)]
+                    current_width = w
+                else:
+                    if current_line:
+                        current_width += space_width
+                    current_line.append((word, is_bold))
+                    current_width += w
+            if current_line:
+                lines_to_draw.append(current_line)
+            # Draw each line (mixed bold/normal) at same y, then move down
+            for line_tuples in lines_to_draw:
+                if y_pos - line_height < margin_bottom:
+                    canvas_obj.showPage()
+                    canvas_obj.setFont("Helvetica", font_size)
+                    y_pos = h - margin
+                x_pos = x
+                for word, is_bold in line_tuples:
+                    canvas_obj.setFont("Helvetica-Bold", font_size) if is_bold else canvas_obj.setFont("Helvetica", font_size)
+                    canvas_obj.drawString(x_pos, y_pos, word)
+                    x_pos += canvas_obj.stringWidth(word, "Helvetica-Bold" if is_bold else "Helvetica", font_size) + space_width
+                y_pos -= line_height
+        return y_pos
+
+    # Title: GOps Department Pulse Survey Summary – MONTH YEAR
+    title = "GOps Department Pulse Survey Summary" + (f" – {month} {year}" if month and year else (f" – {year}" if year else ""))
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, title)
+    y -= 24
+
+    # Images (no heading)
+    for path in png_paths:
+        if not os.path.isfile(path):
+            continue
+        y -= 6
+        if y < margin + 2 * inch:
+            c.showPage()
+            y = h - margin
+        try:
+            img = ImageReader(path)
+            iw, ih = img.getSize()
+            scale = min((w - 2 * margin) / iw, (y - margin - 36) / ih, 1.0)
+            nw, nh = iw * scale, ih * scale
+            c.drawImage(path, margin, y - nh, width=nw, height=nh)
+            y -= nh + 12
+        except Exception as e:
+            c.setFont("Helvetica", 9)
+            c.drawString(margin, y, f"[Image error: {path}]")
+            y -= 14
+
+    # Comments section
+    y -= 12
+    if y < margin + inch:
+        c.showPage()
+        y = h - margin
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Optional comments (by sentiment)")
+    y -= 18
+    for sent in ("Positive", "Neutral", "Negative"):
+        items = grouped_comments.get(sent, [])
+        if not items:
+            continue
+        y -= 12  # newline before each sentiment subheading
+        if y < margin + 1.5 * inch:
+            c.showPage()
+            y = h - margin
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(margin, y, f"{sent}:")
+        y -= 12
+        c.setFont("Helvetica", 8)
+        for num, (squad, comment) in enumerate(items, 1):
+            line = f"{num}. [{squad}] {comment[:400]}{'…' if len(comment) > 400 else ''}"
+            y = draw_text_block(c, line, margin, y, w - 2 * margin, font_size=8)
+            y -= 4
+        y -= 6
+    y -= 12
+
+    # Analysis section (render **...** as bold, no raw markdown)
+    if analysis_text:
+        y -= 12  # newline before Analysis heading
+        if y < margin + inch:
+            c.showPage()
+            y = h - margin
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(margin, y, "Analysis")
+        y -= 18
+        y -= 12  # extra line break after Analysis heading
+        y = draw_analysis_with_bold(c, analysis_text, margin, y, w - 2 * margin)
+
+    c.save()
+    print("PDF saved to", output_path)
 
 
 if __name__ == "__main__":
