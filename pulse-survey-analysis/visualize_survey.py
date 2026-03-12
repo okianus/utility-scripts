@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-# EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check August 2025.xlsx")
+#EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check August 2025.xlsx")
 EXCEL_FILE = os.path.join(SCRIPT_DIR, "survey-responses", "GOps Engagement Survey – Pulse Check February 2026.xlsx")
 SHEET_NAME = "Form Responses 1"
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
@@ -273,9 +273,18 @@ def main():
     ax.barh(y_pos, pct_neg_list, color="#E24B4B", label="Negative (Disagree + Strongly Disagree)")
     ax.barh(y_pos, pct_neu_list, left=left_neg, color="#F5A623", label="Neutral")
     ax.barh(y_pos, pct_pos_list, left=left_neu, color="#7ED321", label="Positive (Agree / Strongly Agree)")
+    # Show positive % on each bar: inside green segment when wide enough, else at end of bar
+    for i in range(len(labels_ordered)):
+        pp = pct_pos_list[i]
+        if pp >= 8:
+            x_center = left_neu[i] + pp / 2
+            ax.text(x_center, y_pos[i], f"{pp:.0f}%", ha="center", va="center", fontsize=8, color="white", fontweight="bold")
+        else:
+            ax.text(99, y_pos[i], f"{pp:.0f}%", ha="right", va="center", fontsize=8, color="#333")
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels_ordered, fontsize=10)
     ax.set_xlim(0, 100)
+    ax.set_xticks(np.arange(0, 101, 10))
     ax.set_xlabel("Percentage of responses")
     ax.set_ylabel("")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
@@ -405,6 +414,7 @@ def main():
     ax3.set_yticks(y_attr)
     ax3.set_yticklabels(attr_order, fontsize=10)
     ax3.set_xlim(0, 100)
+    ax3.set_xticks(np.arange(0, 101, 10))
     ax3.set_xlabel("Percentage of responses")
     ax3.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
     ax3.set_title("Pulse Survey – Sentiment by attribute (department aggregate)" + title_suffix)
@@ -795,7 +805,7 @@ def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, 
         y -= 12
         c.setFont("Helvetica", 8)
         for num, (squad, comment) in enumerate(items, 1):
-            line = f"{num}. [{squad}] {comment[:400]}{'…' if len(comment) > 400 else ''}"
+            line = f"{num}. [{squad}] {comment}"
             y = draw_text_block(c, line, margin, y, w - 2 * margin, font_size=8)
             y -= 4
         y -= 6
