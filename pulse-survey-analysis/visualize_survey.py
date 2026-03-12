@@ -187,6 +187,55 @@ def get_optional_comment_columns(df):
     ]
 
 
+def _response_to_scale(value):
+    """Map response text to numeric scale 1-5. Returns (scale, display_str). display_str is description only (e.g. 'Strongly Agree'), stripping leading 'N – ' if present."""
+    if pd.isna(value):
+        return None, ""
+    s = str(value).strip()
+    if not s:
+        return None, ""
+    # Use description only: strip leading "1 – ", "2 – ", etc.
+    display_str = s.split(" – ", 1)[1].strip() if " – " in s else s
+    lower = s.lower()
+    if "strongly disagree" in lower:
+        return 1, display_str
+    if "disagree" in lower:
+        return 2, display_str
+    if "neutral" in lower:
+        return 3, display_str
+    if "agree" in lower and "strongly" in lower:
+        return 5, display_str
+    if "agree" in lower:
+        return 4, display_str
+    # Numeric fallback
+    try:
+        n = int(s.replace(".", "").strip())
+        if 1 <= n <= 5:
+            return n, display_str
+    except ValueError:
+        pass
+    return None, display_str
+
+
+def _get_optional_comment_to_question_map(df):
+    """Return dict: optional_comment_col -> question_col (the question column immediately before it)."""
+    all_cols = list(df.columns)
+    question_cols = set(get_question_columns(df))
+    optional_cols = get_optional_comment_columns(df)
+    out = {}
+    for opt_col in optional_cols:
+        if opt_col not in all_cols:
+            continue
+        idx = all_cols.index(opt_col)
+        for j in range(idx - 1, -1, -1):
+            if all_cols[j] in question_cols:
+                out[opt_col] = all_cols[j]
+                break
+        else:
+            out[opt_col] = None
+    return out
+
+
 # Expected squad names for ordering in charts (others from data will be appended)
 SQUAD_ORDER = ["AI", "Alerting", "IRM", "SLOs"]
 
@@ -411,6 +460,14 @@ def main():
     ax3.barh(y_attr, attr_neg, color="#E24B4B", label="Negative (Disagree + Strongly Disagree)")
     ax3.barh(y_attr, attr_neu, left=left_neg, color="#F5A623", label="Neutral")
     ax3.barh(y_attr, attr_pos, left=left_neu, color="#7ED321", label="Positive (Agree / Strongly Agree)")
+    # Show positive % on each bar: inside green segment when wide enough, else at end of bar
+    for i in range(len(attr_order)):
+        pp = attr_pos[i]
+        if pp >= 8:
+            x_center = left_neu[i] + pp / 2
+            ax3.text(x_center, y_attr[i], f"{pp:.0f}%", ha="center", va="center", fontsize=8, color="white", fontweight="bold")
+        else:
+            ax3.text(99, y_attr[i], f"{pp:.0f}%", ha="right", va="center", fontsize=8, color="#333")
     ax3.set_yticks(y_attr)
     ax3.set_yticklabels(attr_order, fontsize=10)
     ax3.set_xlim(0, 100)
@@ -446,9 +503,9 @@ def main():
     print("Chart saved to", out_path_radar)
     png_paths.append(out_path_radar)
 
-    # Step 7: Optional comments with LLM sentiment, grouped by sentiment, [Squad] prefix
+    # Step 7: Optional comments grouped by sentiment (from responder's rating 1-5), [Squad – question, response: X] prefix
     squad_col = get_squad_column(df)
-    grouped_comments = _run_optional_comments_sentiment(df, squad_col)
+    grouped_comments, additional_thoughts = _run_optional_comments_by_rating(df, squad_col, label_by_col)
 
     # LLM analysis: 5 things working well, 5 areas for improvement
     analysis_text = _run_llm_analysis(
@@ -467,7 +524,7 @@ def main():
 
     # Step 9: PDF with PNGs, comments, and analysis (YEAR-MONTH-gops-survey-summary.pdf)
     pdf_path = os.path.join(OUTPUT_DIR, f"{filename_prefix}-gops-survey-summary.pdf")
-    _build_summary_pdf(png_paths, grouped_comments, analysis_text, pdf_path, month=month, year=year)
+    _build_summary_pdf(png_paths, grouped_comments, analysis_text, pdf_path, month=month, year=year, additional_thoughts=additional_thoughts)
 
 
 def _run_llm_analysis(
@@ -532,92 +589,78 @@ Survey data summary:
         return None
 
 
-def _run_optional_comments_sentiment(df, squad_col):
-    """Collect optional comments with squad, use LLM to gauge sentiment, group by sentiment. Return dict Positive/Neutral/Negative -> list of (squad, comment)."""
+def _run_optional_comments_by_rating(df, squad_col, label_by_col):
+    """Collect optional comments; group by sentiment from the responder's rating for that question:
+    Positive = 4 or 5, Neutral = 3, Negative = 1 or 2.
+    The last column of the spreadsheet is treated as overall survey comments (additional thoughts).
+    Returns (grouped, additional_thoughts): grouped = dict Positive/Neutral/Negative -> list of (squad, comment, short_question, response); additional_thoughts = list of (squad, comment)."""
     optional_cols = get_optional_comment_columns(df)
     if not optional_cols:
         print("No optional comment columns found.")
-        return {"Positive": [], "Neutral": [], "Negative": []}
+        return {"Positive": [], "Neutral": [], "Negative": []}, []
 
-    # Collect (squad, comment) for each non-empty optional comment
+    all_cols = list(df.columns)
+    overall_col = all_cols[-1] if (all_cols and all_cols[-1] in optional_cols) else None
+    per_question_cols = [c for c in optional_cols if c != overall_col]
+
+    opt_to_question = _get_optional_comment_to_question_map(df)
     squad_vals = df[squad_col].fillna("").astype(str).str.strip() if squad_col else [""] * len(df)
-    comments_with_squad = []
+    grouped = {"Positive": [], "Neutral": [], "Negative": []}
+    additional_thoughts = []
+
     for idx in range(len(df)):
         squad = squad_vals.iloc[idx] if squad_col else "Unknown"
-        for col in optional_cols:
-            val = df[col].iloc[idx]
-            if pd.notna(val) and str(val).strip():
-                comments_with_squad.append((squad, str(val).strip()))
-
-    if not comments_with_squad:
-        print("No optional comments to analyze.")
-        return {"Positive": [], "Neutral": [], "Negative": []}
-
-    # Get sentiment from LLM (batch)
-    try:
-        from openai import OpenAI  # type: ignore[reportMissingImports]
-    except ImportError:
-        print("Skipping optional comments sentiment (openai not installed).")
-        return {"Positive": [], "Neutral": [], "Negative": []}
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Skipping optional comments sentiment (OPENAI_API_KEY not set).")
-        return {"Positive": [], "Neutral": [], "Negative": []}
-
-    client = OpenAI(api_key=api_key)
-    model = LLM_MODEL_ENV or _pick_available_chat_model(client)
-    sentiments = []
-    batch_size = 30
-    for start in range(0, len(comments_with_squad), batch_size):
-        batch = comments_with_squad[start : start + batch_size]
-        numbered = "\n".join(f"{i+1}. {text[:500]}" for i, (_, text) in enumerate(batch))
-        prompt = f"""For each of the following survey comments, reply with exactly one word: Positive, Neutral, or Negative. Put one word per line, in the same order (line 1 = comment 1, etc.). No other text.
-
-Comments:
-{numbered}"""
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            for line in text.splitlines():
-                if len(sentiments) >= len(comments_with_squad):
-                    break
-                line = line.strip().lower()
-                if "positive" in line:
-                    sentiments.append("Positive")
-                elif "negative" in line:
-                    sentiments.append("Negative")
+        for opt_col in per_question_cols:
+            val = df[opt_col].iloc[idx]
+            if pd.isna(val) or not str(val).strip():
+                continue
+            comment = str(val).strip()
+            question_col = opt_to_question.get(opt_col)
+            if question_col is None:
+                short_question = "Unknown question"
+                response_display = ""
+                scale = None
+            else:
+                short_question = label_by_col.get(question_col, _truncate_label(question_col))
+                response_val = df[question_col].iloc[idx]
+                scale, response_display = _response_to_scale(response_val)
+            # 1,2 -> Negative; 3 -> Neutral; 4,5 -> Positive; unparseable -> Neutral
+            if scale is not None:
+                if scale in (1, 2):
+                    sent = "Negative"
+                elif scale == 3:
+                    sent = "Neutral"
                 else:
-                    sentiments.append("Neutral")
-        except Exception as e:
-            print(f"LLM sentiment batch error: {e}; defaulting to Neutral.")
-            sentiments.extend(["Neutral"] * len(batch))
-    # Pad or trim to match comment count
-    while len(sentiments) < len(comments_with_squad):
-        sentiments.append("Neutral")
-    sentiments = sentiments[: len(comments_with_squad)]
+                    sent = "Positive"
+            else:
+                sent = "Neutral"
+            grouped[sent].append((squad, comment, short_question, response_display))
 
-    grouped = {"Positive": [], "Neutral": [], "Negative": []}
-    for (squad, comment), sent in zip(comments_with_squad, sentiments):
-        grouped[sent].append((squad, comment))
-    # Sort by squad alphabetically within each sentiment
+        if overall_col is not None:
+            val = df[overall_col].iloc[idx]
+            if pd.notna(val) and str(val).strip():
+                additional_thoughts.append((squad, str(val).strip()))
+
     for sent in grouped:
-        grouped[sent] = sorted(grouped[sent], key=lambda x: (x[0].lower(), x[1]))
+        grouped[sent] = sorted(grouped[sent], key=lambda x: (x[0].lower(), x[2], x[1]))
+    additional_thoughts.sort(key=lambda x: (x[0].lower(), x[1]))
 
-    print("\n--- Optional comments (grouped by sentiment) ---")
+    print("\n--- Optional comments (grouped by responder rating) ---")
     for sent in ("Positive", "Neutral", "Negative"):
         print(f"\n{sent}:")
-        for squad, comment in grouped[sent]:
+        for squad, comment, short_question, response_display in grouped[sent]:
+            prefix = f"[{squad} – {short_question}, response: {response_display}]" if (short_question or response_display) else f"[{squad}]"
+            print(f"  {prefix} {comment}")
+    if additional_thoughts:
+        print("\nAdditional thoughts:")
+        for squad, comment in additional_thoughts:
             print(f"  [{squad}] {comment}")
     print("\n--- End optional comments ---")
-    return grouped
+    return grouped, additional_thoughts
 
 
-def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, month=None, year=None):
-    """Write YEAR-MONTH-gops-survey-summary.pdf with PNGs, comments, and analysis."""
+def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, month=None, year=None, additional_thoughts=None):
+    """Write YEAR-MONTH-gops-survey-summary.pdf with PNGs, comments, and analysis. additional_thoughts = list of (squad, comment) for the overall survey comments subsection."""
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.units import inch
@@ -790,7 +833,7 @@ def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, 
         c.showPage()
         y = h - margin
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(margin, y, "Optional comments (by sentiment)")
+    c.drawString(margin, y, "Optional comments (grouped by responder rating)")
     y -= 18
     for sent in ("Positive", "Neutral", "Negative"):
         items = grouped_comments.get(sent, [])
@@ -804,12 +847,30 @@ def _build_summary_pdf(png_paths, grouped_comments, analysis_text, output_path, 
         c.drawString(margin, y, f"{sent}:")
         y -= 12
         c.setFont("Helvetica", 8)
-        for num, (squad, comment) in enumerate(items, 1):
-            line = f"{num}. [{squad}] {comment}"
+        for num, item in enumerate(items, 1):
+            squad, comment, short_question, response_display = (item if len(item) == 4 else (item[0], item[1], "", ""))
+            prefix = f"[{squad} – {short_question}, response: {response_display}]" if (short_question or response_display) else f"[{squad}]"
+            line = f"{num}. {prefix} {comment}"
             y = draw_text_block(c, line, margin, y, w - 2 * margin, font_size=8)
             y -= 4
         y -= 6
     y -= 12
+
+    # Additional thoughts (overall survey comments from last column)
+    if additional_thoughts:
+        y -= 12
+        if y < margin + 1.5 * inch:
+            c.showPage()
+            y = h - margin
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(margin, y, "Additional thoughts:")
+        y -= 12
+        c.setFont("Helvetica", 8)
+        for num, (squad, comment) in enumerate(additional_thoughts, 1):
+            line = f"{num}. [{squad}] {comment}"
+            y = draw_text_block(c, line, margin, y, w - 2 * margin, font_size=8)
+            y -= 4
+        y -= 12
 
     # Analysis section (render **...** as bold, no raw markdown)
     if analysis_text:
